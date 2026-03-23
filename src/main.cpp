@@ -3,6 +3,27 @@
 #include <Encoder.h>
 #include <EEPROM.h>
 
+#if defined(__AVR__)
+float maxVoltage = 5.0; // Most AVR (Uno, Mega, Nano) are 5V
+#elif defined(ARDUINO_ARCH_SAMD) || defined(ARDUINO_ARCH_SAM)
+float maxVoltage = 3.3; // Due, Zero, MKR series are 3.3V
+#elif defined(ESP8266) || defined(ESP32)
+float maxVoltage = 3.3; // ESP boards are 3.3V
+#else
+float maxVoltage = 5.0; // Default fallback
+#endif
+
+#if defined(__AVR__)
+const int adcMax = 1023; // 10-bit
+#elif defined(ARDUINO_ARCH_SAMD) || defined(ARDUINO_ARCH_SAM) || defined(ARDUINO_ARCH_RENESAS)
+// These boards default to 10-bit but support higher
+const int adcMax = 1023;
+#elif defined(ESP32)
+const int adcMax = 4095; // 12-bit
+#else
+const int adcMax = 1023;
+#endif
+
 LiquidCrystal_I2C lcd(0x27, 20, 4);
 Encoder enc(2, 3);
 
@@ -10,9 +31,14 @@ Encoder enc(2, 3);
 #define START_PIN 5
 #define OUTPUT_PIN A0
 #define BUZZER_PIN 6
-#define VOLTAGE_PIN A1
+#define VOLTAGE_BATTERY_PIN A1
+#define VOLTAGE_BATTERY_PIN_DEVIDER (float)2.7943
+#define VOLTAGE_1_BANK A6
+#define VOLTAGE_1_BANK_DEVIDER (float)3.293
 #define PROTECTION_PIN A2
+#define PROTECTION_PIN_DEVIDER (float)3.576
 #define CONTACT_PIN A3 // Новый пин для контроля замыкания электродов
+#define CONTACT_PIN_DEVIDER (float)1.47
 #define BACKLIGHT_PIN 9
 
 // Для режима AUTO
@@ -33,7 +59,7 @@ bool blinkState = true;
 bool startButtonState = false;
 unsigned long lastDebounceTime = 0;
 const unsigned long debounceDelay = 5;
-const float voltageMultiplier = 1;
+const int8_t voltageMultiplier = 3;
 bool dangerDisplayed = false;
 unsigned long lastBeepTime = 0;
 unsigned long lowVoltageStartTime = 0;
@@ -44,6 +70,7 @@ bool protectionActive = false;
 void drawScreen();
 void drawVoltage(float voltage, bool lowVoltage);
 void generatePulse();
+float readVoltage(int pin, float voltageMultiplier = 1.0);
 
 void beep()
 {
@@ -123,7 +150,7 @@ void selfTest()
   lcd.clear();
   lcd.setCursor(0, 0);
   lcd.print("Voltage Test...");
-  float protectionVoltage = analogRead(PROTECTION_PIN) * (5.0 / 1023.0 * 3.0);
+  float protectionVoltage = readVoltage(PROTECTION_PIN, PROTECTION_PIN_DEVIDER);
   lcd.setCursor(0, 1);
   lcd.print("Voltage: ");
   lcd.print(protectionVoltage, 2);
@@ -162,7 +189,7 @@ void setup()
   pinMode(START_PIN, INPUT_PULLUP);
   pinMode(OUTPUT_PIN, OUTPUT);
   pinMode(BUZZER_PIN, OUTPUT);
-  pinMode(VOLTAGE_PIN, INPUT);
+  pinMode(VOLTAGE_BATTERY_PIN, INPUT);
   pinMode(PROTECTION_PIN, INPUT);
   pinMode(CONTACT_PIN, INPUT); // Новый пин как вход
   digitalWrite(OUTPUT_PIN, LOW);
@@ -194,8 +221,8 @@ void setup()
 }
 void loop()
 {
-  float protectionVoltage = analogRead(PROTECTION_PIN) * (5.0 / 1023.0);
-  bool protectionVoltageOutOfRange = (protectionVoltage > 5.0 || protectionVoltage < 3.0);
+  float protectionVoltage = readVoltage(PROTECTION_PIN, PROTECTION_PIN_DEVIDER);
+  bool protectionVoltageOutOfRange = (protectionVoltage > 18.0 || protectionVoltage < 10.0);
 
   if (protectionVoltageOutOfRange)
   {
@@ -239,8 +266,8 @@ void loop()
   }
 
   // === Режим AUTO: контроль замыкания электродов ===
-  float contactVoltage = analogRead(CONTACT_PIN) * (5.0 / 1023.0);
-  bool contactDetected = contactVoltage > 2.0; // Порог чувствительности (подстрой по делителю)
+  float contactVoltage = readVoltage(CONTACT_PIN, CONTACT_PIN_DEVIDER);
+  bool contactDetected = contactVoltage > 3.0;
 
   if (autoMode && !lowVoltageProtectionActive)
   {
@@ -361,7 +388,7 @@ void loop()
     drawScreen();
   }
 
-  float voltage = analogRead(VOLTAGE_PIN) * (14 / 1023.0) * voltageMultiplier;
+  float voltage = readVoltage(VOLTAGE_BATTERY_PIN, VOLTAGE_BATTERY_PIN_DEVIDER);
   bool lowVoltage = (voltage < 4.5);
 
   if (lowVoltage)
@@ -508,4 +535,13 @@ void generatePulse()
     delay(values[2]);
     digitalWrite(OUTPUT_PIN, LOW);
   }
+}
+
+float readVoltage(int pin, float voltageMultiplier = 1.0)
+{
+  int analogVoltage = analogRead(pin);
+
+  float voltage = analogVoltage * maxVoltage * voltageMultiplier / (float)adcMax;
+
+  return voltage;
 }
