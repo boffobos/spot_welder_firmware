@@ -31,6 +31,7 @@ Encoder enc(2, 3);
 #define START_PIN 5
 #define OUTPUT_PIN A0
 #define BUZZER_PIN 6
+#define BATTERY_VOLTAGE_TRESHOLD (float)4.5
 #define VOLTAGE_BATTERY_PIN A1
 #define VOLTAGE_BATTERY_PIN_DEVIDER (float)2.7943
 #define VOLTAGE_1_BANK A6
@@ -66,11 +67,13 @@ unsigned long lowVoltageStartTime = 0;
 bool lowVoltageProtectionActive = false;
 unsigned long protectionVoltageStartTime = 0;
 bool protectionActive = false;
+unsigned long startVoltTime = 0;
 
 void drawScreen();
-void drawVoltage(float voltage, bool lowVoltage);
+void drawVoltage(float voltages[2], bool lowVoltage);
 void generatePulse();
 float readVoltage(int pin, float voltageMultiplier = 1.0);
+float *slidingAverageVoltage(int pin1, float devider1, int pin2, float devider2);
 
 void beep()
 {
@@ -114,7 +117,7 @@ void testDisplay()
 
 void selfTest()
 {
-  testDisplay();
+  // testDisplay();
 
   lcd.setCursor(1, 0);
   lcd.print("SYSTEM TESTING...");
@@ -204,16 +207,16 @@ void setup()
     brightness = 5;
   analogWrite(BACKLIGHT_PIN, map(brightness, 0, 5, 0, 255));
 
-  lcd.setCursor(3, 0);
-  lcd.print("BY AKA KASYAN");
-  lcd.setCursor(2, 1);
-  lcd.print(">>MyWeld V2.0<<");
-  lcd.setCursor(5, 2);
-  lcd.print("SOFT V2.1");
-  lcd.setCursor(1, 3);
-  lcd.print("Aka Kasyan YouTube");
-  delay(3000);
-  beep();
+  // lcd.setCursor(3, 0);
+  // lcd.print("BY AKA KASYAN");
+  // lcd.setCursor(2, 1);
+  // lcd.print(">>MyWeld V2.0<<");
+  // lcd.setCursor(5, 2);
+  // lcd.print("SOFT V2.1");
+  // lcd.setCursor(1, 3);
+  // lcd.print("Aka Kasyan YouTube");
+  // delay(3000);
+  // beep();
 
   selfTest();
   lcd.clear();
@@ -388,8 +391,10 @@ void loop()
     drawScreen();
   }
 
-  float voltage = readVoltage(VOLTAGE_BATTERY_PIN, VOLTAGE_BATTERY_PIN_DEVIDER);
-  bool lowVoltage = (voltage < 4.5);
+  // float voltage = readVoltage(VOLTAGE_BATTERY_PIN, VOLTAGE_BATTERY_PIN_DEVIDER);
+  // float voltageB1 = readVoltage(VOLTAGE_1_BANK, VOLTAGE_1_BANK_DEVIDER);
+  float *batteryVoltages = slidingAverageVoltage(VOLTAGE_1_BANK, VOLTAGE_1_BANK_DEVIDER, VOLTAGE_BATTERY_PIN, VOLTAGE_BATTERY_PIN_DEVIDER);
+  bool lowVoltage = (batteryVoltages[1] < BATTERY_VOLTAGE_TRESHOLD);
 
   if (lowVoltage)
   {
@@ -408,7 +413,8 @@ void loop()
     lowVoltageProtectionActive = false;
   }
 
-  drawVoltage(voltage, lowVoltageProtectionActive);
+  drawVoltage(batteryVoltages, lowVoltageProtectionActive);
+  free(batteryVoltages);
 
   if (!autoMode && digitalRead(START_PIN) == LOW && !startButtonState && !lowVoltageProtectionActive)
   {
@@ -504,20 +510,26 @@ void drawScreen()
   }
 }
 
-void drawVoltage(float voltage, bool lowVoltage)
+void drawVoltage(float voltages[2], bool lowVoltage)
 {
   lcd.setCursor(0, 3);
-  lcd.print("Voltage: ");
-  lcd.print(voltage, 2);
-  lcd.print("V ");
 
   if (lowVoltage)
   {
+    lcd.print("U: ");
+    lcd.print(voltages[1]);
+    lcd.print(" ");
     lcd.print("LOW ");
   }
   else
   {
-    lcd.print("     "); // ← 5 пробелов, чтобы гарантированно затереть "LOW"
+    lcd.print("U1+U2:");
+    lcd.print(voltages[0], 2);
+    lcd.print("+");
+    lcd.print(voltages[1] - voltages[0]);
+    lcd.print("=");
+    lcd.print(voltages[1]);
+    // lcd.print(" "); // ← 5 пробелов, чтобы гарантированно затереть "LOW"
   }
 }
 
@@ -544,4 +556,48 @@ float readVoltage(int pin, float voltageMultiplier = 1.0)
   float voltage = analogVoltage * maxVoltage * voltageMultiplier / (float)adcMax;
 
   return voltage;
+}
+
+float *slidingAverageVoltage(int pin1, float devider1, int pin2, float devider2)
+{
+  const int window = 20;
+  static float u1[window]{};
+  static float u2[window]{};
+
+  for (int i = 1; i < window; i++)
+  {
+    u1[i - 1] = u1[i];
+    u2[i - 1] = u2[i];
+  }
+  u1[window - 1] = readVoltage(pin1, devider1);
+  u2[window - 1] = readVoltage(pin2, devider2);
+
+  float u1Accumulator = 0;
+  int u1Count = 0;
+  float u2Accumulator = 0;
+  int u2Count = 0;
+
+  for (int j = 0; j < window; j++)
+  {
+    if (u1[j] > 0)
+    {
+      u1Accumulator += u1[j];
+      u1Count++;
+    }
+
+    if (u2[j] > 0)
+    {
+      u2Accumulator += u2[j];
+      u2Count++;
+    }
+  }
+
+  if (!(u1Count && u2Count))
+    return NULL;
+
+  float *voltages = (float *)malloc(sizeof(float) * 2);
+  voltages[0] = u1Accumulator / u1Count;
+  voltages[1] = u2Accumulator / u2Count;
+
+  return voltages;
 }
