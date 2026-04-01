@@ -41,6 +41,7 @@ Encoder enc(2, 3);
 #define CONTACT_PIN A3 // Новый пин для контроля замыкания электродов
 #define CONTACT_PIN_DEVIDER (float)1.47
 #define BACKLIGHT_PIN 9
+#define SLIDING_AVERAGE_WINDOW 30
 
 // Для режима AUTO
 bool autoTriggered = false;
@@ -560,7 +561,7 @@ float readVoltage(int pin, float voltageMultiplier = 1.0)
 
 float *slidingAverageVoltage(int pin1, float devider1, int pin2, float devider2)
 {
-  const int window = 20;
+  const int window = SLIDING_AVERAGE_WINDOW;
   static float u1[window]{};
   static float u2[window]{};
 
