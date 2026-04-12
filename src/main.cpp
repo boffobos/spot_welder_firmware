@@ -42,6 +42,17 @@ Encoder enc(2, 3);
 #define CONTACT_PIN_DEVIDER (float)1.47
 #define BACKLIGHT_PIN 9
 #define SLIDING_AVERAGE_WINDOW 30
+/*limits*/
+#define PULSE_1_MIN 1
+#define PULSE_1_MAX 50
+#define PULSE_2_MIN 0
+#define PULSE_2_MAX 50
+#define PULSE_DELAY_MIN 10
+#define PULSE_DELAY_MAX 99
+#define AM_DELAY_MIN 0.3
+#define AM_DELAY_MAX 2
+#define BRIGHTNESS_MIN 0
+#define BRIGHTNESS_MAX 5
 
 // Для режима AUTO
 bool autoTriggered = false;
@@ -70,11 +81,35 @@ unsigned long protectionVoltageStartTime = 0;
 bool protectionActive = false;
 unsigned long startVoltTime = 0;
 
+typedef enum
+{
+  PULSE_1,
+  PULSE_DELAY,
+  PULSE_2,
+  AUTOMODE = 5,
+  AM_DELAY,
+  BRIGHTNESS
+
+} Eeprom;
+
+struct
+{
+  uint8_t pulse_1;               /*1-50 ms*/
+  uint8_t pulse_2;               /*0-50 ms*/
+  uint8_t inter_pulse_delay;     /*10-50 ms*/
+  uint8_t mode;                  /*0 - manual, 1 - auto*/
+  uint8_t auto_mode_delay;       /*.3-2 sec*/
+  uint8_t back_light_saturation; /*0-5*/
+  uint8_t beeper_mode;           /*0 - off, 1 - on*/
+} settings;
+
 void drawScreen();
 void drawVoltage(float voltages[2], bool lowVoltage);
 void generatePulse();
 float readVoltage(int pin, float voltageMultiplier = 1.0);
 float *slidingAverageVoltage(int pin1, float devider1, int pin2, float devider2);
+void printMainScreen(); // define
+uint8_t loadSettings(); // define
 
 void beep()
 {
@@ -202,10 +237,20 @@ void setup()
 
   lcd.init();
   lcd.backlight();
-  autoMode = EEPROM.read(5);
-  brightness = EEPROM.read(7);
-  if (brightness > 5)
-    brightness = 5;
+  loadSettings();
+  values[0] = settings.pulse_1;
+  values[1] = settings.inter_pulse_delay;
+  values[2] = settings.pulse_2;
+  autoMode = settings.mode;
+  sValue = (float)settings.auto_mode_delay / 10.0;
+  brightness = settings.back_light_saturation;
+  // autoMode = EEPROM.read(5);
+  // brightness = EEPROM.read(7);
+  // if (brightness > 5)
+  //   brightness = 5;
+  if (brightness == 0)
+    lcd.noBacklight();
+
   analogWrite(BACKLIGHT_PIN, map(brightness, 0, 5, 0, 255));
 
   // lcd.setCursor(3, 0);
@@ -219,7 +264,7 @@ void setup()
   // delay(3000);
   // beep();
 
-  selfTest();
+  // selfTest();
   lcd.clear();
   drawScreen();
 }
@@ -601,4 +646,44 @@ float *slidingAverageVoltage(int pin1, float devider1, int pin2, float devider2)
   voltages[1] = u2Accumulator / u2Count;
 
   return voltages;
+}
+
+void printMainScreen()
+{
+}
+
+uint8_t loadSettings()
+{
+  /*EEPROM structure:
+      0         1         2         3         4           5          6          7
+  [||||||||][||||||||][||||||||][00000000][00000000] [||||||||] [||||||||] [|||||||||]
+  [pulse_1]  [delay]   [pulse_2]                    [auto_mode] [am_delay] [brightness]
+  */
+
+  EEPROM.get(PULSE_1, settings.pulse_1);
+  EEPROM.get(PULSE_DELAY, settings.inter_pulse_delay);
+  EEPROM.get(PULSE_1, settings.pulse_2);
+  EEPROM.get(AUTOMODE, settings.mode);
+  EEPROM.get(AM_DELAY, settings.auto_mode_delay);
+  EEPROM.get(BRIGHTNESS, settings.back_light_saturation);
+
+  if (settings.pulse_1 > PULSE_1_MAX || settings.pulse_1 < PULSE_1_MIN)
+    settings.pulse_1 = PULSE_1_MIN;
+
+  if (settings.inter_pulse_delay > PULSE_DELAY_MIN || settings.inter_pulse_delay < PULSE_DELAY_MIN)
+    settings.inter_pulse_delay = PULSE_DELAY_MAX;
+
+  if (settings.pulse_2 > PULSE_2_MAX || settings.pulse_2 < PULSE_2_MIN)
+    settings.pulse_2 = PULSE_2_MIN;
+
+  if (settings.mode != 0 && settings.mode != 1)
+    settings.mode = 0;
+
+  if (settings.auto_mode_delay > AM_DELAY_MAX || settings.auto_mode_delay < AM_DELAY_MIN)
+    settings.auto_mode_delay = AM_DELAY_MAX;
+
+  if (settings.back_light_saturation > BRIGHTNESS_MAX || settings.back_light_saturation < BRIGHTNESS_MIN)
+    settings.back_light_saturation = BRIGHTNESS_MIN;
+
+  return 1;
 }
