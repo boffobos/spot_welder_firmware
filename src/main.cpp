@@ -34,10 +34,10 @@ Encoder enc(2, 3);
 #define BATTERY_VOLTAGE_TRESHOLD (float)4.5
 #define VOLTAGE_BATTERY_PIN A1
 #define VOLTAGE_BATTERY_PIN_DEVIDER (float)2.7943
-#define VOLTAGE_1_BANK A6
-#define VOLTAGE_1_BANK_DEVIDER (float)3.293
-#define PROTECTION_PIN A2
-#define PROTECTION_PIN_DEVIDER (float)3.576
+#define VOLTAGE_1_BANK_PIN A6
+#define VOLTAGE_1_BANK_PIN_DEVIDER (float)3.293
+#define MOSFET_DRIVER_VOLTAGE_PIN A2
+#define MOSFET_DRIVER_VOLTAGE_PIN_DEVIDER (float)3.576
 #define CONTACT_PIN A3 // Новый пин для контроля замыкания электродов
 #define CONTACT_PIN_DEVIDER (float)1.47
 #define BACKLIGHT_PIN 9
@@ -53,6 +53,14 @@ Encoder enc(2, 3);
 #define AM_DELAY_MAX 2
 #define BRIGHTNESS_MIN 0
 #define BRIGHTNESS_MAX 5
+#define MAX_SETTINGS_STRING_LEN 12
+#define MAX_SETTINGS_SCREEN 4
+
+/*EEPROM structure:
+      0         1         2         3         4           5          6          7
+  [||||||||][||||||||][||||||||][00000000][00000000] [||||||||] [||||||||] [|||||||||]
+  [pulse_1]  [delay]   [pulse_2]                    [auto_mode] [am_delay] [brightness]
+  */
 
 // Для режима AUTO
 bool autoTriggered = false;
@@ -107,9 +115,10 @@ void drawScreen();
 void drawVoltage(float voltages[2], bool lowVoltage);
 void generatePulse();
 float readVoltage(int pin, float voltageMultiplier = 1.0);
-float *slidingAverageVoltage(int pin1, float devider1, int pin2, float devider2);
-void printMainScreen(); // define
-uint8_t loadSettings(); // define
+float slidingAverageVoltage(float *window_arr, const int window_size, int pin, float devider);
+void printMainScreen(float *voltages);
+uint8_t loadSettings();
+void printSettingsScreen(uint8_t cursor_row, uint8_t screen); // define
 
 void beep()
 {
@@ -189,7 +198,7 @@ void selfTest()
   lcd.clear();
   lcd.setCursor(0, 0);
   lcd.print("Voltage Test...");
-  float protectionVoltage = readVoltage(PROTECTION_PIN, PROTECTION_PIN_DEVIDER);
+  float protectionVoltage = readVoltage(MOSFET_DRIVER_VOLTAGE_PIN, MOSFET_DRIVER_VOLTAGE_PIN_DEVIDER);
   lcd.setCursor(0, 1);
   lcd.print("Voltage: ");
   lcd.print(protectionVoltage, 2);
@@ -229,7 +238,7 @@ void setup()
   pinMode(OUTPUT_PIN, OUTPUT);
   pinMode(BUZZER_PIN, OUTPUT);
   pinMode(VOLTAGE_BATTERY_PIN, INPUT);
-  pinMode(PROTECTION_PIN, INPUT);
+  pinMode(MOSFET_DRIVER_VOLTAGE_PIN, INPUT);
   pinMode(CONTACT_PIN, INPUT); // Новый пин как вход
   digitalWrite(OUTPUT_PIN, LOW);
   digitalWrite(BUZZER_PIN, LOW);
@@ -266,11 +275,63 @@ void setup()
 
   // selfTest();
   lcd.clear();
-  drawScreen();
+  // drawScreen();
+  Serial.begin(9600);
 }
+
 void loop()
 {
-  float protectionVoltage = readVoltage(PROTECTION_PIN, PROTECTION_PIN_DEVIDER);
+  const int window_size = SLIDING_AVERAGE_WINDOW;
+  static float u1_arr[window_size]; // super capasitor fist bank voltage
+  static float ub_arr[window_size]; // super capasitors battery voltage
+  static float ug_arr[window_size]; // mosfet driver voltage
+
+  float u1 = slidingAverageVoltage(u1_arr, window_size, VOLTAGE_1_BANK_PIN, VOLTAGE_1_BANK_PIN_DEVIDER);
+  float ub = slidingAverageVoltage(ub_arr, window_size, VOLTAGE_BATTERY_PIN, VOLTAGE_BATTERY_PIN_DEVIDER);
+  float ug = slidingAverageVoltage(ug_arr, window_size, MOSFET_DRIVER_VOLTAGE_PIN, MOSFET_DRIVER_VOLTAGE_PIN_DEVIDER);
+  float voltages[] = {u1, ub, ug};
+
+  /*Encoder control settings screen*/
+  static int32_t prev_enc = 0;
+  int32_t encder = enc.read() / 2;
+  int increment = 0;
+  static int cursor = 0;
+  static int screen = 0;
+  if (prev_enc != encder)
+  {
+    Serial.println(encder);
+    increment = encder - prev_enc;
+    prev_enc = encder;
+  }
+
+  if (increment != 0)
+  {
+    cursor += increment;
+    if (cursor > 2)
+    {
+      screen++;
+      cursor = 2;
+    }
+    else if (cursor < 0)
+    {
+      screen--;
+      cursor = 0;
+    }
+    if (screen > MAX_SETTINGS_SCREEN)
+      screen = MAX_SETTINGS_SCREEN;
+    else if (screen < 0)
+      screen = 0;
+    printSettingsScreen(cursor, screen);
+    beep();
+  }
+  ///////////////////////////////
+  // lcd.clear();
+  // lcd.setCursor(0, 0);
+  // lcd.print("Test");
+  // lcd.setCursor(0, 1);
+  // lcd.print("U1:");
+
+  float protectionVoltage = ug;
   bool protectionVoltageOutOfRange = (protectionVoltage > 18.0 || protectionVoltage < 10.0);
 
   if (protectionVoltageOutOfRange)
@@ -352,7 +413,8 @@ void loop()
       editMode = !editMode;
       beep();
       buttonHeld = false;
-      drawScreen(); // <--- ВОТ ЭТА СТРОКА решает проблему
+      // drawScreen(); // <--- ВОТ ЭТА СТРОКА решает проблему
+      printMainScreen(voltages);
     }
   }
   else
@@ -365,84 +427,89 @@ void loop()
   {
     blinkState = !blinkState;
     lastBlinkTime = millis();
-    drawScreen();
+    // drawScreen();
+    printMainScreen(voltages);
   }
 
-  long newPos = enc.read() / 4;
-  if (newPos != lastPos)
-  {
-    beep();
+  // long newPos = enc.read() / 4;
+  // if (newPos != lastPos)
+  // {
+  //   beep();
 
-    if (!editMode)
-    {
-      if (newPos > lastPos)
-      {
-        selected = (selected + 1) % (autoMode ? 6 : 5); // В MAN пропускаем S
-      }
-      else
-      {
-        selected = (selected + (autoMode ? 5 : 4)) % (autoMode ? 6 : 5);
-      }
-    }
-    else
-    {
-      if (selected < 3)
-      {
-        if (selected == 2)
-        { // P2 с поддержкой OFF
-          if (newPos > lastPos && values[2] < 50)
-            values[2]++;
-          if (newPos < lastPos && values[2] > 0)
-            values[2]--;
-          EEPROM.write(2, values[2]);
-        }
-        else
-        {
-          if (newPos > lastPos && values[selected] < 50)
-            values[selected]++;
-          if (newPos < lastPos && values[selected] > 0)
-            values[selected]--;
-          EEPROM.write(selected, values[selected]);
-        }
-      }
-      else if (selected == 3)
-      {
-        if (newPos > lastPos && brightness < 5)
-          brightness++;
-        if (newPos < lastPos && brightness > 0)
-          brightness--;
-        analogWrite(BACKLIGHT_PIN, map(brightness, 0, 5, 0, 255));
-        EEPROM.write(7, brightness);
-      }
-      else if (selected == 4)
-      {
-        autoMode = !autoMode;
-        EEPROM.write(5, autoMode);
-        if (!autoMode && selected == 5)
-        {
-          selected = 0;
-        }
-      }
-      else if (selected == 5 && autoMode)
-      {
-        if (newPos > lastPos && sValue < 2.0)
-          sValue += 0.1;
-        if (newPos < lastPos && sValue > 0.3)
-          sValue -= 0.1;
-        EEPROM.write(6, (int)(sValue * 10));
-      }
-    }
+  //   if (!editMode)
+  //   {
+  //     if (newPos > lastPos)
+  //     {
+  //       selected = (selected + 1) % (autoMode ? 6 : 5); // В MAN пропускаем S
+  //     }
+  //     else
+  //     {
+  //       selected = (selected + (autoMode ? 5 : 4)) % (autoMode ? 6 : 5);
+  //     }
+  //   }
+  //   else
+  //   {
+  //     if (selected < 3)
+  //     {
+  //       if (selected == 2)
+  //       { // P2 с поддержкой OFF
+  //         if (newPos > lastPos && values[2] < 50)
+  //           values[2]++;
+  //         if (newPos < lastPos && values[2] > 0)
+  //           values[2]--;
+  //         EEPROM.write(2, values[2]);
+  //       }
+  //       else
+  //       {
+  //         if (newPos > lastPos && values[selected] < 50)
+  //           values[selected]++;
+  //         if (newPos < lastPos && values[selected] > 0)
+  //           values[selected]--;
+  //         EEPROM.write(selected, values[selected]);
+  //       }
+  //     }
+  //     else if (selected == 3)
+  //     {
+  //       if (newPos > lastPos && brightness < 5)
+  //         brightness++;
+  //       if (newPos < lastPos && brightness > 0)
+  //         brightness--;
+  //       analogWrite(BACKLIGHT_PIN, map(brightness, 0, 5, 0, 255));
+  //       EEPROM.write(7, brightness);
+  //     }
+  //     else if (selected == 4)
+  //     {
+  //       autoMode = !autoMode;
+  //       EEPROM.write(5, autoMode);
+  //       if (!autoMode && selected == 5)
+  //       {
+  //         selected = 0;
+  //       }
+  //     }
+  //     else if (selected == 5 && autoMode)
+  //     {
+  //       if (newPos > lastPos && sValue < 2.0)
+  //         sValue += 0.1;
+  //       if (newPos < lastPos && sValue > 0.3)
+  //         sValue -= 0.1;
+  //       EEPROM.write(6, (int)(sValue * 10));
+  //     }
+  //   }
 
-    lastPos = newPos;
-    drawScreen();
-  }
+  //   lastPos = newPos;
+  // drawScreen();
+  // printMainScreen(voltages);
+  // }
 
-  // float voltage = readVoltage(VOLTAGE_BATTERY_PIN, VOLTAGE_BATTERY_PIN_DEVIDER);
-  // float voltageB1 = readVoltage(VOLTAGE_1_BANK, VOLTAGE_1_BANK_DEVIDER);
-  float *batteryVoltages = slidingAverageVoltage(VOLTAGE_1_BANK, VOLTAGE_1_BANK_DEVIDER, VOLTAGE_BATTERY_PIN, VOLTAGE_BATTERY_PIN_DEVIDER);
-  bool lowVoltage = (batteryVoltages[1] < BATTERY_VOLTAGE_TRESHOLD);
+  // const int window_size = SLIDING_AVERAGE_WINDOW;
+  // static float u1_arr[window_size];
+  // static float ub_arr[window_size];
 
-  if (lowVoltage)
+  // float u1 = slidingAverageVoltage(u1_arr, window_size, VOLTAGE_1_BANK_PIN, VOLTAGE_1_BANK_PIN_DEVIDER);
+  // float ub = slidingAverageVoltage(ub_arr, window_size, VOLTAGE_BATTERY_PIN, VOLTAGE_BATTERY_PIN_DEVIDER);
+  // float voltages[] = {u1, ub};
+
+  if (ub < BATTERY_VOLTAGE_TRESHOLD)
   {
     if (lowVoltageStartTime == 0)
     {
@@ -459,8 +526,7 @@ void loop()
     lowVoltageProtectionActive = false;
   }
 
-  drawVoltage(batteryVoltages, lowVoltageProtectionActive);
-  free(batteryVoltages);
+  // drawVoltage(voltages, lowVoltageProtectionActive);
 
   if (!autoMode && digitalRead(START_PIN) == LOW && !startButtonState && !lowVoltageProtectionActive)
   {
@@ -473,6 +539,7 @@ void loop()
   {
     startButtonState = false;
   }
+
 } // <-- Закрытие loop()
 
 void drawScreen()
@@ -604,62 +671,119 @@ float readVoltage(int pin, float voltageMultiplier = 1.0)
   return voltage;
 }
 
-float *slidingAverageVoltage(int pin1, float devider1, int pin2, float devider2)
+float slidingAverageVoltage(float *window_arr, const int window_size, int pin, float devider)
 {
-  const int window = SLIDING_AVERAGE_WINDOW;
-  static float u1[window]{};
-  static float u2[window]{};
+  for (int i = 1; i < window_size; i++)
+    window_arr[i - 1] = window_arr[i];
 
-  for (int i = 1; i < window; i++)
+  window_arr[window_size - 1] = readVoltage(pin, devider);
+  float accumulator = 0;
+  int counter = 0;
+
+  for (int i = 0; i < window_size; i++)
   {
-    u1[i - 1] = u1[i];
-    u2[i - 1] = u2[i];
-  }
-  u1[window - 1] = readVoltage(pin1, devider1);
-  u2[window - 1] = readVoltage(pin2, devider2);
-
-  float u1Accumulator = 0;
-  int u1Count = 0;
-  float u2Accumulator = 0;
-  int u2Count = 0;
-
-  for (int j = 0; j < window; j++)
-  {
-    if (u1[j] > 0)
+    if (window_arr[i] > 0)
     {
-      u1Accumulator += u1[j];
-      u1Count++;
-    }
-
-    if (u2[j] > 0)
-    {
-      u2Accumulator += u2[j];
-      u2Count++;
+      accumulator += window_arr[i];
+      counter++;
     }
   }
 
-  if (!(u1Count && u2Count))
-    return NULL;
+  if (counter == 0)
+    return 0;
 
-  float *voltages = (float *)malloc(sizeof(float) * 2);
-  voltages[0] = u1Accumulator / u1Count;
-  voltages[1] = u2Accumulator / u2Count;
-
-  return voltages;
+  return (float)accumulator / (float)counter;
 }
 
-void printMainScreen()
+void printMainScreen(float *voltages)
 {
+  /* Main screen content:
+  PDP:50 50 50 ms
+  Ug:15.2  A0.5
+  U1:2.53
+  U2:2.49  Ub:5.02
+  */
+
+  /*voltages = [U1, Ub, Ug]*/
+  static float u1_prev = 0;
+  static float ub_prev = 0;
+  static float ug_prev = 0;
+  static uint8_t p1_prev = 0;
+  static uint8_t p2_prev = 0;
+  static uint8_t delay_prev = 0;
+
+  // lcd.clear();
+  // Printing all static content
+  lcd.setCursor(0, 0);
+  lcd.print("PDP:");
+  lcd.setCursor(13, 0);
+  lcd.print("ms");
+  lcd.setCursor(0, 1);
+  lcd.print("Ug:");
+  lcd.setCursor(0, 2);
+  lcd.print("U1:");
+  lcd.setCursor(0, 3);
+  lcd.print("U2:");
+  lcd.setCursor(9, 3);
+  lcd.print("Ub:");
+
+  /* 0 row */
+  if (p1_prev != settings.pulse_1)
+  {
+    lcd.setCursor(4, 0);
+    lcd.print(settings.pulse_1);
+  }
+  if (delay_prev != settings.inter_pulse_delay)
+  {
+    lcd.setCursor(7, 0);
+    lcd.print(settings.inter_pulse_delay);
+  }
+  if (p2_prev != settings.pulse_2)
+  {
+    lcd.setCursor(10, 0);
+    lcd.print(settings.pulse_2);
+  }
+  /* 1 row */
+  if (ug_prev != voltages[2])
+  {
+    lcd.setCursor(3, 1);
+    lcd.print(voltages[2], 1);
+  }
+
+  lcd.setCursor(9, 1);
+  if (settings.mode == 1)
+  {
+    lcd.print("A");
+    lcd.print(settings.auto_mode_delay / 10.0, 1);
+  }
+  else
+  {
+    lcd.print("MANUAL");
+  }
+
+  /* 2-3 row */
+  if (u1_prev != voltages[0] || ub_prev != voltages[1])
+  {
+    lcd.setCursor(3, 2);
+    lcd.print(voltages[0], 2);
+
+    lcd.setCursor(3, 3);
+    lcd.print(voltages[1] - voltages[0], 2);
+
+    lcd.setCursor(12, 3);
+    lcd.print(voltages[1], 2);
+  }
+
+  u1_prev = voltages[0];
+  ub_prev = voltages[1];
+  ug_prev = voltages[2];
+  p1_prev = settings.pulse_1;
+  p2_prev = settings.pulse_2;
+  delay_prev = settings.inter_pulse_delay;
 }
 
 uint8_t loadSettings()
 {
-  /*EEPROM structure:
-      0         1         2         3         4           5          6          7
-  [||||||||][||||||||][||||||||][00000000][00000000] [||||||||] [||||||||] [|||||||||]
-  [pulse_1]  [delay]   [pulse_2]                    [auto_mode] [am_delay] [brightness]
-  */
-
   EEPROM.get(PULSE_1, settings.pulse_1);
   EEPROM.get(PULSE_DELAY, settings.inter_pulse_delay);
   EEPROM.get(PULSE_1, settings.pulse_2);
@@ -686,4 +810,77 @@ uint8_t loadSettings()
     settings.back_light_saturation = BRIGHTNESS_MIN;
 
   return 1;
+}
+
+void printSettingsScreen(uint8_t cursor_row, uint8_t screen) // cursor_row 0-2, screen 0 - 5
+{
+  static uint8_t prev_screen = 0;
+  static uint8_t prev_cursor = 0;
+  const uint8_t setup_screen_rows = 8;
+  const uint8_t shown_rows = 3;
+  const uint8_t content_offseet_left = 2;
+  const uint8_t content_offset_top = 1;
+  char static_content[setup_screen_rows][MAX_SETTINGS_STRING_LEN] = {"PULSE_1:", "PULSE_2:", "DELAY:", "MODE:", "AUTO_DELAY:", "BACK_LIGHT:", "BEEPER:"};
+  /*row 0*/
+  if (prev_screen != screen)
+    lcd.clear();
+
+  lcd.setCursor(6, 0);
+  lcd.print("SETTINGS");
+  for (int i = 0; i < shown_rows; i++)
+  {
+    /*Print static conten of defined screen*/
+    lcd.setCursor(content_offseet_left, i + content_offset_top);
+    lcd.print(static_content[i + screen]);
+    // lcd.setCursor(MAX_SETTINGS_STRING_LEN, i);
+
+    /*Printing variable parameters from struct settings*/
+    uint8_t p = i + screen;
+    lcd.setCursor(MAX_SETTINGS_STRING_LEN + content_offseet_left, i + content_offset_top);
+
+    switch (p)
+    {
+    case 0:
+      lcd.print(settings.pulse_1);
+      lcd.print("ms");
+      break;
+    case 1:
+      lcd.print(settings.pulse_2);
+      lcd.print("ms");
+      break;
+    case 2:
+      lcd.print(settings.inter_pulse_delay);
+      lcd.print("ms");
+      break;
+    case 3:
+      lcd.print(settings.mode == 1 ? "AUTO" : "MANUAL");
+      break;
+    case 4:
+      lcd.print(settings.auto_mode_delay / 10.0, 1);
+      lcd.print("sec");
+      break;
+    case 5:
+      lcd.print(settings.back_light_saturation);
+      break;
+    case 6:
+      lcd.print(settings.beeper_mode == 1 ? "ON" : "OFF");
+      break;
+    case 7:
+      lcd.print("                    ");
+      break;
+    default:
+      lcd.print("                    ");
+      break;
+    }
+  }
+  /*Print cursor on defined condition*/
+  if (prev_cursor != cursor_row)
+  {
+    lcd.setCursor(0, prev_cursor + content_offset_top);
+    lcd.print(" ");
+  }
+  lcd.setCursor(0, cursor_row + content_offset_top);
+  lcd.print("*");
+  prev_screen = screen;
+  prev_cursor = cursor_row;
 }
