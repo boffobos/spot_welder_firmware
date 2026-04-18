@@ -42,6 +42,7 @@ Encoder enc(2, 3);
 #define CONTACT_PIN_DEVIDER (float)1.47
 #define BACKLIGHT_PIN 9
 #define SLIDING_AVERAGE_WINDOW 30
+#define LONG_BUTTON_PRESS_TIME_MS 600
 /*limits*/
 #define PULSE_1_MIN 1
 #define PULSE_1_MAX 50
@@ -54,7 +55,25 @@ Encoder enc(2, 3);
 #define BRIGHTNESS_MIN 0
 #define BRIGHTNESS_MAX 5
 #define MAX_SETTINGS_STRING_LEN 12
-#define MAX_SETTINGS_SCREEN 4
+#define SETTING_OPTIONS 7
+#define SETTINGS_SCREEN_SPAN 3
+#define MAX_SETTINGS_SCREEN_NUMBER SETTING_OPTIONS - SETTINGS_SCREEN_SPAN
+
+/*Settings screen view
+
+   _____Screen 0_______     ______Screen 1______     ______Screen 2______
+  |     SETTINGS       |   |     SETTINGS       |   |     SETTINGS       |
+ 0|* Pulse_1:   50ms   |   |  Pulse_2:   50ms   |   |  Delay:     50ms   |
+ 1|  Pulse_2:   50ms   |   |  Delay:     50ms   |   |  Mode:      AUTO   |
+ 2|  Delay:     50ms   |   |* Mode:      AUTO   |   |* Auto_delay:0.5sec |
+   --------------------     --------------------     --------------------
+ 3/  Mode:      AUTO   /
+ 4/  Auto_delay:0.5sec /
+ 5/  Back_light:4      /
+ 6/  Beeper:    ON     /
+ 7/____________________/
+
+*/
 
 /*EEPROM structure:
       0         1         2         3         4           5          6          7
@@ -89,6 +108,8 @@ unsigned long protectionVoltageStartTime = 0;
 bool protectionActive = false;
 unsigned long startVoltTime = 0;
 
+uint8_t screen_shown = 0; // 0 - main screen, 1 - settings screen
+
 typedef enum
 {
   PULSE_1,
@@ -118,7 +139,8 @@ float readVoltage(int pin, float voltageMultiplier = 1.0);
 float slidingAverageVoltage(float *window_arr, const int window_size, int pin, float devider);
 void printMainScreen(float *voltages);
 uint8_t loadSettings();
-void printSettingsScreen(uint8_t cursor_row, uint8_t screen); // define
+void printSettingsScreen(uint8_t cursor); // define
+int digitalReadDebounce(int pin);
 
 void beep()
 {
@@ -291,40 +313,78 @@ void loop()
   float ug = slidingAverageVoltage(ug_arr, window_size, MOSFET_DRIVER_VOLTAGE_PIN, MOSFET_DRIVER_VOLTAGE_PIN_DEVIDER);
   float voltages[] = {u1, ub, ug};
 
-  /*Encoder control settings screen*/
-  static int32_t prev_enc = 0;
-  int32_t encder = enc.read() / 2;
-  int increment = 0;
-  static int cursor = 0;
-  static int screen = 0;
-  if (prev_enc != encder)
+  if (screen_shown == 1)
   {
-    Serial.println(encder);
-    increment = encder - prev_enc;
-    prev_enc = encder;
+    /*Encoder control*/
+
+    uint8_t cursor_max = SETTING_OPTIONS - 1; // custor starts from 0
+    uint8_t cursor_min = 0;
+    int8_t cursor = enc.read() / 2;
+    if (cursor > cursor_max)
+    {
+      enc.write(cursor_max * 2);
+      cursor = enc.read() / 2;
+    }
+    else if (cursor < cursor_min)
+    {
+      enc.write(cursor_min * 2);
+      cursor = enc.read() / 2;
+    }
+    ///////////////////////////////
+
+    printSettingsScreen(cursor);
+  }
+  else if (screen_shown == 0)
+  {
+    printMainScreen(voltages);
   }
 
-  if (increment != 0)
+  /*Handle button presses*/
+  static uint32_t press_time = 0;
+  uint8_t b_state = digitalReadDebounce(BUTTON_PIN);
+  static uint8_t prev_b_state = b_state;
+  if (prev_b_state != b_state)
   {
-    cursor += increment;
-    if (cursor > 2)
+    if (b_state == LOW)
     {
-      screen++;
-      cursor = 2;
+      press_time = millis();
     }
-    else if (cursor < 0)
+    else
     {
-      screen--;
-      cursor = 0;
+      if (press_time != 0)
+      {
+        uint32_t current_time = millis();
+        if (current_time - press_time < LONG_BUTTON_PRESS_TIME_MS)
+        {
+          // handle short press
+          Serial.print("Short press: ");
+          Serial.print(current_time - press_time);
+          Serial.println("ms");
+          press_time = 0;
+        }
+      }
     }
-    if (screen > MAX_SETTINGS_SCREEN)
-      screen = MAX_SETTINGS_SCREEN;
-    else if (screen < 0)
-      screen = 0;
-    printSettingsScreen(cursor, screen);
-    beep();
   }
-  ///////////////////////////////
+  else
+  {
+    uint32_t current_time = millis();
+    if (b_state == LOW && press_time != 0 && current_time - press_time > LONG_BUTTON_PRESS_TIME_MS)
+    {
+      // handle long press
+      Serial.print("Long press: ");
+      Serial.print(current_time - press_time);
+      Serial.println("ms");
+      lcd.clear();
+      screen_shown = !screen_shown; // switching screens
+      press_time = 0;
+    }
+  }
+  prev_b_state = b_state;
+  //////////////////
+
+  /* Toggle screens*/
+
+  ///////////////////
   // lcd.clear();
   // lcd.setCursor(0, 0);
   // lcd.print("Test");
@@ -401,26 +461,26 @@ void loop()
     }
   }
 
-  if (digitalRead(BUTTON_PIN) == LOW)
-  {
-    if (!buttonHeld)
-    {
-      buttonPressTime = millis();
-      buttonHeld = true;
-    }
-    else if (millis() - buttonPressTime > 2000)
-    {
-      editMode = !editMode;
-      beep();
-      buttonHeld = false;
-      // drawScreen(); // <--- ВОТ ЭТА СТРОКА решает проблему
-      printMainScreen(voltages);
-    }
-  }
-  else
-  {
-    buttonHeld = false;
-  }
+  // if (digitalRead(BUTTON_PIN) == LOW)
+  // {
+  //   if (!buttonHeld)
+  //   {
+  //     buttonPressTime = millis();
+  //     buttonHeld = true;
+  //   }
+  //   else if (millis() - buttonPressTime > 2000)
+  //   {
+  //     editMode = !editMode;
+  //     beep();
+  //     buttonHeld = false;
+  //     // drawScreen(); // <--- ВОТ ЭТА СТРОКА решает проблему
+  //     printMainScreen(voltages);
+  //   }
+  // }
+  // else
+  // {
+  //   buttonHeld = false;
+  // }
 
   static unsigned long lastBlinkTime = 0;
   if (editMode && millis() - lastBlinkTime > 500)
@@ -501,13 +561,15 @@ void loop()
   // printMainScreen(voltages);
   // }
 
-  // const int window_size = SLIDING_AVERAGE_WINDOW;
-  // static float u1_arr[window_size];
-  // static float ub_arr[window_size];
+  /*this code moved to the begining of loop(). Need to be deleted
+   const int window_size = SLIDING_AVERAGE_WINDOW;
+   static float u1_arr[window_size];
+   static float ub_arr[window_size];
 
-  // float u1 = slidingAverageVoltage(u1_arr, window_size, VOLTAGE_1_BANK_PIN, VOLTAGE_1_BANK_PIN_DEVIDER);
-  // float ub = slidingAverageVoltage(ub_arr, window_size, VOLTAGE_BATTERY_PIN, VOLTAGE_BATTERY_PIN_DEVIDER);
-  // float voltages[] = {u1, ub};
+   float u1 = slidingAverageVoltage(u1_arr, window_size, VOLTAGE_1_BANK_PIN, VOLTAGE_1_BANK_PIN_DEVIDER);
+   float ub = slidingAverageVoltage(ub_arr, window_size, VOLTAGE_BATTERY_PIN, VOLTAGE_BATTERY_PIN_DEVIDER);
+   float voltages[] = {u1, ub};
+  */
 
   if (ub < BATTERY_VOLTAGE_TRESHOLD)
   {
@@ -705,12 +767,6 @@ void printMainScreen(float *voltages)
   */
 
   /*voltages = [U1, Ub, Ug]*/
-  static float u1_prev = 0;
-  static float ub_prev = 0;
-  static float ug_prev = 0;
-  static uint8_t p1_prev = 0;
-  static uint8_t p2_prev = 0;
-  static uint8_t delay_prev = 0;
 
   // lcd.clear();
   // Printing all static content
@@ -728,27 +784,20 @@ void printMainScreen(float *voltages)
   lcd.print("Ub:");
 
   /* 0 row */
-  if (p1_prev != settings.pulse_1)
-  {
-    lcd.setCursor(4, 0);
-    lcd.print(settings.pulse_1);
-  }
-  if (delay_prev != settings.inter_pulse_delay)
-  {
-    lcd.setCursor(7, 0);
-    lcd.print(settings.inter_pulse_delay);
-  }
-  if (p2_prev != settings.pulse_2)
-  {
-    lcd.setCursor(10, 0);
-    lcd.print(settings.pulse_2);
-  }
+
+  lcd.setCursor(4, 0);
+  lcd.print(settings.pulse_1);
+
+  lcd.setCursor(7, 0);
+  lcd.print(settings.inter_pulse_delay);
+
+  lcd.setCursor(10, 0);
+  lcd.print(settings.pulse_2);
+
   /* 1 row */
-  if (ug_prev != voltages[2])
-  {
-    lcd.setCursor(3, 1);
-    lcd.print(voltages[2], 1);
-  }
+
+  lcd.setCursor(3, 1);
+  lcd.print(voltages[2], 1);
 
   lcd.setCursor(9, 1);
   if (settings.mode == 1)
@@ -762,24 +811,15 @@ void printMainScreen(float *voltages)
   }
 
   /* 2-3 row */
-  if (u1_prev != voltages[0] || ub_prev != voltages[1])
-  {
-    lcd.setCursor(3, 2);
-    lcd.print(voltages[0], 2);
 
-    lcd.setCursor(3, 3);
-    lcd.print(voltages[1] - voltages[0], 2);
+  lcd.setCursor(3, 2);
+  lcd.print(voltages[0], 2);
 
-    lcd.setCursor(12, 3);
-    lcd.print(voltages[1], 2);
-  }
+  lcd.setCursor(3, 3);
+  lcd.print(voltages[1] - voltages[0], 2);
 
-  u1_prev = voltages[0];
-  ub_prev = voltages[1];
-  ug_prev = voltages[2];
-  p1_prev = settings.pulse_1;
-  p2_prev = settings.pulse_2;
-  delay_prev = settings.inter_pulse_delay;
+  lcd.setCursor(12, 3);
+  lcd.print(voltages[1], 2);
 }
 
 uint8_t loadSettings()
@@ -812,22 +852,31 @@ uint8_t loadSettings()
   return 1;
 }
 
-void printSettingsScreen(uint8_t cursor_row, uint8_t screen) // cursor_row 0-2, screen 0 - 5
+void printSettingsScreen(uint8_t cursor) // cursor 0-6, screen 0 - 4
 {
   static uint8_t prev_screen = 0;
   static uint8_t prev_cursor = 0;
-  const uint8_t setup_screen_rows = 8;
-  const uint8_t shown_rows = 3;
+  const uint8_t settings_screen_parameters = SETTING_OPTIONS;
+  const uint8_t screen_span = SETTINGS_SCREEN_SPAN;
   const uint8_t content_offseet_left = 2;
   const uint8_t content_offset_top = 1;
-  char static_content[setup_screen_rows][MAX_SETTINGS_STRING_LEN] = {"PULSE_1:", "PULSE_2:", "DELAY:", "MODE:", "AUTO_DELAY:", "BACK_LIGHT:", "BEEPER:"};
-  /*row 0*/
+  uint8_t screen = prev_screen; // ??? test
+  char static_content[settings_screen_parameters][MAX_SETTINGS_STRING_LEN] = {"Pulse_1:", "Pulse_2:", "Delay:", "Mode:", "Auto_delay:", "Back_light:", "Beeper:"};
+  while (cursor - screen >= screen_span)
+    screen++;
+  if (screen > MAX_SETTINGS_SCREEN_NUMBER)
+    screen = MAX_SETTINGS_SCREEN_NUMBER;
+  while (cursor - screen < 0)
+    screen--;
+  if (screen < 0)
+    screen = 0;
   if (prev_screen != screen)
     lcd.clear();
 
+  /*row 0*/
   lcd.setCursor(6, 0);
   lcd.print("SETTINGS");
-  for (int i = 0; i < shown_rows; i++)
+  for (int i = 0; i < screen_span; i++)
   {
     /*Print static conten of defined screen*/
     lcd.setCursor(content_offseet_left, i + content_offset_top);
@@ -873,14 +922,32 @@ void printSettingsScreen(uint8_t cursor_row, uint8_t screen) // cursor_row 0-2, 
       break;
     }
   }
-  /*Print cursor on defined condition*/
-  if (prev_cursor != cursor_row)
+  /*Print cursor on defined position*/
+  if (prev_cursor != cursor)
   {
-    lcd.setCursor(0, prev_cursor + content_offset_top);
+    lcd.setCursor(0, prev_cursor - screen + content_offset_top);
     lcd.print(" ");
+    beep();
   }
-  lcd.setCursor(0, cursor_row + content_offset_top);
+  lcd.setCursor(0, cursor - screen + content_offset_top);
   lcd.print("*");
   prev_screen = screen;
-  prev_cursor = cursor_row;
+  prev_cursor = cursor;
+}
+
+int digitalReadDebounce(int pin)
+{
+  uint8_t bounce_time = 5;
+  uint32_t start = millis();
+  uint32_t current_time = start;
+  int counter = 0;
+  int pin_state_accumulator = digitalRead(pin); // pin is pulled up;
+  while (current_time - start < bounce_time)
+  {
+    counter++;
+    pin_state_accumulator += digitalRead(pin);
+    current_time = millis();
+  }
+
+  return pin_state_accumulator / counter;
 }
