@@ -1,4 +1,5 @@
 #include <Wire.h>
+#include <string.h>
 #include <LiquidCrystal_I2C.h>
 #include <Encoder.h>
 #include <EEPROM.h>
@@ -43,6 +44,7 @@ Encoder enc(2, 3);
 #define BACKLIGHT_PIN 9
 #define SLIDING_AVERAGE_WINDOW 30
 #define LONG_BUTTON_PRESS_TIME_MS 600
+#define ENCODER_DEVIDER 2
 /*limits*/
 #define PULSE_1_MIN 1
 #define PULSE_1_MAX 50
@@ -61,12 +63,12 @@ Encoder enc(2, 3);
 
 /*Settings screen view
 
-   _____Screen 0_______     ______Screen 1______     ______Screen 2______
-  |     SETTINGS       |   |     SETTINGS       |   |     SETTINGS       |
- 0|* Pulse_1:   50ms   |   |  Pulse_2:   50ms   |   |  Delay:     50ms   |
- 1|  Pulse_2:   50ms   |   |  Delay:     50ms   |   |  Mode:      AUTO   |
- 2|  Delay:     50ms   |   |* Mode:      AUTO   |   |* Auto_delay:0.5sec |
-   --------------------     --------------------     --------------------
+   _____Screen 0_______     ______Screen 1______     ______Screen 2______    ______Screen 3______
+  |     SETTINGS       |   |     SETTINGS       |   |     SETTINGS       |   |     SETTINGS       |
+ 0|* Pulse_1:   50ms   |   |  Pulse_2:   50ms   |   |  Delay:     50ms   |   |  Mode:      AUTO   |
+ 1|  Pulse_2:   50ms   |   |  Delay:     50ms   |   |  Mode:      AUTO   |   |  Auto_delay:0.5sec |
+ 2|  Delay:     50ms   |   |* Mode:      AUTO   |   |* Auto_delay:0.5sec |   |* Back_light:4      |
+   --------------------     --------------------     --------------------    ---------------------
  3/  Mode:      AUTO   /
  4/  Auto_delay:0.5sec /
  5/  Back_light:4      /
@@ -109,6 +111,8 @@ bool protectionActive = false;
 unsigned long startVoltTime = 0;
 
 uint8_t screen_shown = 0; // 0 - main screen, 1 - settings screen
+int8_t current_settings_option = -1;
+uint8_t last_settings_cursor = 0;
 
 typedef enum
 {
@@ -139,7 +143,7 @@ float readVoltage(int pin, float voltageMultiplier = 1.0);
 float slidingAverageVoltage(float *window_arr, const int window_size, int pin, float devider);
 void printMainScreen(float *voltages);
 uint8_t loadSettings();
-void printSettingsScreen(uint8_t cursor); // define
+uint8_t printSettingsScreen(Encoder *encoder); // define
 int digitalReadDebounce(int pin);
 
 void beep()
@@ -317,22 +321,24 @@ void loop()
   {
     /*Encoder control*/
 
-    uint8_t cursor_max = SETTING_OPTIONS - 1; // custor starts from 0
-    uint8_t cursor_min = 0;
-    int8_t cursor = enc.read() / 2;
-    if (cursor > cursor_max)
-    {
-      enc.write(cursor_max * 2);
-      cursor = enc.read() / 2;
-    }
-    else if (cursor < cursor_min)
-    {
-      enc.write(cursor_min * 2);
-      cursor = enc.read() / 2;
-    }
+    // uint8_t cursor_max = (SETTING_OPTIONS - 1) * ENCODER_DEVIDER; // custor starts from 0
+    // uint8_t cursor_min = 0 * ENCODER_DEVIDER;
+    // int8_t cursor = enc.read();
+    // // need to move this check into function printSettingsScreen()
+    // if (cursor > cursor_max)
+    // {
+    //   enc.write(cursor_max);
+    //   cursor = enc.read();
+    // }
+    // else if (cursor < cursor_min)
+    // {
+    //   enc.write(cursor_min);
+    //   cursor = enc.read();
+    // }
     ///////////////////////////////
 
-    printSettingsScreen(cursor);
+    printSettingsScreen(&enc);
+    // enc.write(actual_cursor);
   }
   else if (screen_shown == 0)
   {
@@ -360,6 +366,16 @@ void loop()
           Serial.print("Short press: ");
           Serial.print(current_time - press_time);
           Serial.println("ms");
+          if (screen_shown == 1 && current_settings_option == -1)
+          {
+            current_settings_option = enc.read() / ENCODER_DEVIDER;
+          }
+          else if (screen_shown == 1 && current_settings_option != -1)
+          {
+            // Save settings to EEPROM
+            // Change current_settings_option = -1
+            current_settings_option = -1;
+          }
           press_time = 0;
         }
       }
@@ -375,21 +391,22 @@ void loop()
       Serial.print(current_time - press_time);
       Serial.println("ms");
       lcd.clear();
-      screen_shown = !screen_shown; // switching screens
+      beep();
+      if (screen_shown == 1)
+      {
+        last_settings_cursor = enc.read();
+        screen_shown = 0;
+      }
+      else if (screen_shown == 0)
+      {
+        screen_shown = 1;
+        enc.write(last_settings_cursor);
+      }
       press_time = 0;
     }
   }
   prev_b_state = b_state;
   //////////////////
-
-  /* Toggle screens*/
-
-  ///////////////////
-  // lcd.clear();
-  // lcd.setCursor(0, 0);
-  // lcd.print("Test");
-  // lcd.setCursor(0, 1);
-  // lcd.print("U1:");
 
   float protectionVoltage = ug;
   bool protectionVoltageOutOfRange = (protectionVoltage > 18.0 || protectionVoltage < 10.0);
@@ -724,7 +741,7 @@ void generatePulse()
   }
 }
 
-float readVoltage(int pin, float voltageMultiplier = 1.0)
+float readVoltage(int pin, float voltageMultiplier)
 {
   int analogVoltage = analogRead(pin);
 
@@ -852,21 +869,31 @@ uint8_t loadSettings()
   return 1;
 }
 
-void printSettingsScreen(uint8_t cursor) // cursor 0-6, screen 0 - 4
+uint8_t printSettingsScreen(Encoder *encoder)
 {
+  const char static_content[SETTING_OPTIONS][MAX_SETTINGS_STRING_LEN] = {"Pulse_1:", "Pulse_2:", "Delay:", "Mode:", "Auto_delay:", "Back_light:", "Beeper:"};
+  const uint8_t content_offset_top = 1;   // For top row information line
+  const uint8_t content_offseet_left = 2; // For cursor sign and whitespace
+
   static uint8_t prev_screen = 0;
-  static uint8_t prev_cursor = 0;
-  const uint8_t settings_screen_parameters = SETTING_OPTIONS;
-  const uint8_t screen_span = SETTINGS_SCREEN_SPAN;
-  const uint8_t content_offseet_left = 2;
-  const uint8_t content_offset_top = 1;
-  uint8_t screen = prev_screen; // ??? test
-  char static_content[settings_screen_parameters][MAX_SETTINGS_STRING_LEN] = {"Pulse_1:", "Pulse_2:", "Delay:", "Mode:", "Auto_delay:", "Back_light:", "Beeper:"};
-  while (cursor - screen >= screen_span)
+  static uint8_t prev_option_number = 0;
+  uint8_t screen = prev_screen;
+
+  int8_t encP = encoder->read();
+  if (encP > (SETTING_OPTIONS - 1) * ENCODER_DEVIDER)
+    encP = (SETTING_OPTIONS - 1) * ENCODER_DEVIDER;
+  else if (encP < 0)
+    encP = 0;
+
+  encoder->write(encP);
+
+  uint8_t option_number = encP / ENCODER_DEVIDER;
+
+  while (option_number - screen >= SETTINGS_SCREEN_SPAN)
     screen++;
   if (screen > MAX_SETTINGS_SCREEN_NUMBER)
     screen = MAX_SETTINGS_SCREEN_NUMBER;
-  while (cursor - screen < 0)
+  while (option_number - screen < 0)
     screen--;
   if (screen < 0)
     screen = 0;
@@ -874,11 +901,24 @@ void printSettingsScreen(uint8_t cursor) // cursor 0-6, screen 0 - 4
     lcd.clear();
 
   /*row 0*/
-  lcd.setCursor(6, 0);
-  lcd.print("SETTINGS");
-  for (int i = 0; i < screen_span; i++)
+  lcd.setCursor(1, 0);
+  if (current_settings_option < SETTING_OPTIONS && current_settings_option >= 0)
   {
-    /*Print static conten of defined screen*/
+    lcd.print("SETTINGS>");
+    const uint8_t optionLen = strlen(static_content[current_settings_option]);
+    char opt[optionLen];
+    strncpy(opt, static_content[current_settings_option], optionLen - 1);
+    opt[optionLen - 1] = '\0';
+    lcd.print(opt);
+  }
+  else
+  {
+    lcd.print("     SETTINGS      ");
+  }
+
+  for (int i = 0; i < SETTINGS_SCREEN_SPAN; i++)
+  {
+    /*Printing static content*/
     lcd.setCursor(content_offseet_left, i + content_offset_top);
     lcd.print(static_content[i + screen]);
     // lcd.setCursor(MAX_SETTINGS_STRING_LEN, i);
@@ -923,16 +963,17 @@ void printSettingsScreen(uint8_t cursor) // cursor 0-6, screen 0 - 4
     }
   }
   /*Print cursor on defined position*/
-  if (prev_cursor != cursor)
+  if (prev_option_number != option_number)
   {
-    lcd.setCursor(0, prev_cursor - screen + content_offset_top);
+    lcd.setCursor(0, prev_option_number - screen + content_offset_top);
     lcd.print(" ");
     beep();
   }
-  lcd.setCursor(0, cursor - screen + content_offset_top);
+  lcd.setCursor(0, option_number - screen + content_offset_top);
   lcd.print("*");
   prev_screen = screen;
-  prev_cursor = cursor;
+  prev_option_number = option_number;
+  return 1;
 }
 
 int digitalReadDebounce(int pin)
