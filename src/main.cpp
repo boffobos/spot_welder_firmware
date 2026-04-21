@@ -44,7 +44,7 @@ Encoder enc(2, 3);
 #define BACKLIGHT_PIN 9
 #define SLIDING_AVERAGE_WINDOW 30
 #define LONG_BUTTON_PRESS_TIME_MS 600
-#define ENCODER_DEVIDER 2
+#define ENCODER_INCREMENT 2
 /*limits*/
 #define PULSE_1_MIN 1
 #define PULSE_1_MAX 50
@@ -52,10 +52,14 @@ Encoder enc(2, 3);
 #define PULSE_2_MAX 50
 #define PULSE_DELAY_MIN 10
 #define PULSE_DELAY_MAX 99
-#define AM_DELAY_MIN 0.3
-#define AM_DELAY_MAX 2
+#define MODE_MIN 0
+#define MODE_MAX 1
+#define AM_DELAY_MIN 3
+#define AM_DELAY_MAX 20
 #define BRIGHTNESS_MIN 0
 #define BRIGHTNESS_MAX 5
+#define BEEPER_MIN 0
+#define BEEPER_MAX 1
 #define MAX_SETTINGS_STRING_LEN 12
 #define SETTING_OPTIONS 7
 #define SETTINGS_SCREEN_SPAN 3
@@ -121,7 +125,8 @@ typedef enum
   PULSE_2,
   AUTOMODE = 5,
   AM_DELAY,
-  BRIGHTNESS
+  BRIGHTNESS,
+  BEEPER
 
 } Eeprom;
 
@@ -129,7 +134,7 @@ struct
 {
   uint8_t pulse_1;               /*1-50 ms*/
   uint8_t pulse_2;               /*0-50 ms*/
-  uint8_t inter_pulse_delay;     /*10-50 ms*/
+  uint8_t inter_pulse_delay;     /*10-99 ms*/
   uint8_t mode;                  /*0 - manual, 1 - auto*/
   uint8_t auto_mode_delay;       /*.3-2 sec*/
   uint8_t back_light_saturation; /*0-5*/
@@ -143,8 +148,10 @@ float readVoltage(int pin, float voltageMultiplier = 1.0);
 float slidingAverageVoltage(float *window_arr, const int window_size, int pin, float devider);
 void printMainScreen(float *voltages);
 uint8_t loadSettings();
+void saveSettings();
 uint8_t printSettingsScreen(Encoder *encoder); // define
 int digitalReadDebounce(int pin);
+void changeSettingsOption(uint8_t option, int8_t increment);
 
 void beep()
 {
@@ -273,13 +280,9 @@ void setup()
   lcd.init();
   lcd.backlight();
   loadSettings();
-  values[0] = settings.pulse_1;
-  values[1] = settings.inter_pulse_delay;
-  values[2] = settings.pulse_2;
-  autoMode = settings.mode;
   sValue = (float)settings.auto_mode_delay / 10.0;
   brightness = settings.back_light_saturation;
-  // autoMode = EEPROM.read(5);
+  // settings.mode = EEPROM.read(5);
   // brightness = EEPROM.read(7);
   // if (brightness > 5)
   //   brightness = 5;
@@ -321,8 +324,8 @@ void loop()
   {
     /*Encoder control*/
 
-    // uint8_t cursor_max = (SETTING_OPTIONS - 1) * ENCODER_DEVIDER; // custor starts from 0
-    // uint8_t cursor_min = 0 * ENCODER_DEVIDER;
+    // uint8_t cursor_max = (SETTING_OPTIONS - 1) * ENCODER_INCREMENT; // custor starts from 0
+    // uint8_t cursor_min = 0 * ENCODER_INCREMENT;
     // int8_t cursor = enc.read();
     // // need to move this check into function printSettingsScreen()
     // if (cursor > cursor_max)
@@ -338,6 +341,12 @@ void loop()
     ///////////////////////////////
 
     printSettingsScreen(&enc);
+    if (current_settings_option >= 0 && current_settings_option < SETTING_OPTIONS)
+    {
+      int8_t increment = enc.read() / ENCODER_INCREMENT - current_settings_option;
+      changeSettingsOption(current_settings_option, increment);
+      enc.write(current_settings_option * ENCODER_INCREMENT);
+    }
     // enc.write(actual_cursor);
   }
   else if (screen_shown == 0)
@@ -368,13 +377,15 @@ void loop()
           Serial.println("ms");
           if (screen_shown == 1 && current_settings_option == -1)
           {
-            current_settings_option = enc.read() / ENCODER_DEVIDER;
+            current_settings_option = enc.read() / ENCODER_INCREMENT;
           }
-          else if (screen_shown == 1 && current_settings_option != -1)
+          else if (screen_shown == 1 && current_settings_option >= 0 && current_settings_option < SETTING_OPTIONS)
           {
-            // Save settings to EEPROM
             // Change current_settings_option = -1
+            enc.write(current_settings_option * ENCODER_INCREMENT);
             current_settings_option = -1;
+            saveSettings();
+            // Save settings to EEPROM
           }
           press_time = 0;
         }
@@ -456,7 +467,7 @@ void loop()
   float contactVoltage = readVoltage(CONTACT_PIN, CONTACT_PIN_DEVIDER);
   bool contactDetected = contactVoltage > 3.0;
 
-  if (autoMode && !lowVoltageProtectionActive)
+  if (settings.mode && !lowVoltageProtectionActive)
   {
     if (contactDetected)
     {
@@ -517,11 +528,11 @@ void loop()
   //   {
   //     if (newPos > lastPos)
   //     {
-  //       selected = (selected + 1) % (autoMode ? 6 : 5); // В MAN пропускаем S
+  //       selected = (selected + 1) % (settings.mode ? 6 : 5); // В MAN пропускаем S
   //     }
   //     else
   //     {
-  //       selected = (selected + (autoMode ? 5 : 4)) % (autoMode ? 6 : 5);
+  //       selected = (selected + (settings.mode ? 5 : 4)) % (settings.mode ? 6 : 5);
   //     }
   //   }
   //   else
@@ -530,11 +541,11 @@ void loop()
   //     {
   //       if (selected == 2)
   //       { // P2 с поддержкой OFF
-  //         if (newPos > lastPos && values[2] < 50)
-  //           values[2]++;
-  //         if (newPos < lastPos && values[2] > 0)
-  //           values[2]--;
-  //         EEPROM.write(2, values[2]);
+  //         if (newPos > lastPos && settings.pulse_2 < 50)
+  //           settings.pulse_2++;
+  //         if (newPos < lastPos && settings.pulse_2 > 0)
+  //           settings.pulse_2--;
+  //         EEPROM.write(2, settings.pulse_2);
   //       }
   //       else
   //       {
@@ -556,14 +567,14 @@ void loop()
   //     }
   //     else if (selected == 4)
   //     {
-  //       autoMode = !autoMode;
-  //       EEPROM.write(5, autoMode);
-  //       if (!autoMode && selected == 5)
+  //       settings.mode = !settings.mode;
+  //       EEPROM.write(5, settings.mode);
+  //       if (!settings.mode && selected == 5)
   //       {
   //         selected = 0;
   //       }
   //     }
-  //     else if (selected == 5 && autoMode)
+  //     else if (selected == 5 && settings.mode)
   //     {
   //       if (newPos > lastPos && sValue < 2.0)
   //         sValue += 0.1;
@@ -607,7 +618,7 @@ void loop()
 
   // drawVoltage(voltages, lowVoltageProtectionActive);
 
-  if (!autoMode && digitalRead(START_PIN) == LOW && !startButtonState && !lowVoltageProtectionActive)
+  if (!settings.mode && digitalRead(START_PIN) == LOW && !startButtonState && !lowVoltageProtectionActive)
   {
     startButtonState = true;
     beep();
@@ -648,7 +659,7 @@ void drawScreen()
       {
         lcd.print(i == 0 ? "P1=" : i == 1 ? "T="
                                           : "P2=");
-        if (i == 2 && values[2] == 0)
+        if (i == 2 && settings.pulse_2 == 0)
         {
           lcd.print("OFF   ");
         }
@@ -667,14 +678,14 @@ void drawScreen()
       else if (i == 4)
       {
         lcd.print("Mode:");
-        lcd.print(autoMode ? "AUTO " : "MAN  ");
+        lcd.print(settings.mode ? "AUTO " : "MAN  ");
       }
     }
   }
 
   // Если режим AUTO — рисуем S, иначе стираем строку
   lcd.setCursor(10, 2);
-  if (autoMode)
+  if (settings.mode)
   {
     if (selected == 5)
     {
@@ -728,15 +739,15 @@ void drawVoltage(float voltages[2], bool lowVoltage)
 void generatePulse()
 {
   digitalWrite(OUTPUT_PIN, HIGH);
-  delay(values[0]);
+  delay(settings.pulse_1);
   digitalWrite(OUTPUT_PIN, LOW);
 
-  if (values[2] > 0)
+  if (settings.pulse_2 > 0)
   {
     delay(10);
-    delay(values[1]);
+    delay(settings.inter_pulse_delay);
     digitalWrite(OUTPUT_PIN, HIGH);
-    delay(values[2]);
+    delay(settings.pulse_2);
     digitalWrite(OUTPUT_PIN, LOW);
   }
 }
@@ -843,7 +854,7 @@ uint8_t loadSettings()
 {
   EEPROM.get(PULSE_1, settings.pulse_1);
   EEPROM.get(PULSE_DELAY, settings.inter_pulse_delay);
-  EEPROM.get(PULSE_1, settings.pulse_2);
+  EEPROM.get(PULSE_2, settings.pulse_2);
   EEPROM.get(AUTOMODE, settings.mode);
   EEPROM.get(AM_DELAY, settings.auto_mode_delay);
   EEPROM.get(BRIGHTNESS, settings.back_light_saturation);
@@ -851,7 +862,7 @@ uint8_t loadSettings()
   if (settings.pulse_1 > PULSE_1_MAX || settings.pulse_1 < PULSE_1_MIN)
     settings.pulse_1 = PULSE_1_MIN;
 
-  if (settings.inter_pulse_delay > PULSE_DELAY_MIN || settings.inter_pulse_delay < PULSE_DELAY_MIN)
+  if (settings.inter_pulse_delay > PULSE_DELAY_MAX || settings.inter_pulse_delay < PULSE_DELAY_MIN)
     settings.inter_pulse_delay = PULSE_DELAY_MAX;
 
   if (settings.pulse_2 > PULSE_2_MAX || settings.pulse_2 < PULSE_2_MIN)
@@ -869,6 +880,17 @@ uint8_t loadSettings()
   return 1;
 }
 
+void saveSettings()
+{
+  EEPROM.put(PULSE_1, settings.pulse_1);
+  EEPROM.put(PULSE_DELAY, settings.inter_pulse_delay);
+  EEPROM.put(PULSE_2, settings.pulse_2);
+  EEPROM.put(AUTOMODE, settings.mode);
+  EEPROM.put(AM_DELAY, settings.auto_mode_delay);
+  EEPROM.put(BRIGHTNESS, settings.back_light_saturation);
+  EEPROM.put(BEEPER, settings.beeper_mode);
+}
+
 uint8_t printSettingsScreen(Encoder *encoder)
 {
   const char static_content[SETTING_OPTIONS][MAX_SETTINGS_STRING_LEN] = {"Pulse_1:", "Pulse_2:", "Delay:", "Mode:", "Auto_delay:", "Back_light:", "Beeper:"};
@@ -878,31 +900,34 @@ uint8_t printSettingsScreen(Encoder *encoder)
   static uint8_t prev_screen = 0;
   static uint8_t prev_option_number = 0;
   uint8_t screen = prev_screen;
+  uint8_t option_number = prev_option_number;
 
   int8_t encP = encoder->read();
-  if (encP > (SETTING_OPTIONS - 1) * ENCODER_DEVIDER)
-    encP = (SETTING_OPTIONS - 1) * ENCODER_DEVIDER;
-  else if (encP < 0)
-    encP = 0;
+  if (current_settings_option == -1)
+  {
+    if (encP > (SETTING_OPTIONS - 1) * ENCODER_INCREMENT)
+      encP = (SETTING_OPTIONS - 1) * ENCODER_INCREMENT;
+    else if (encP < 0)
+      encP = 0;
 
-  encoder->write(encP);
+    encoder->write(encP);
+    option_number = encP / ENCODER_INCREMENT;
 
-  uint8_t option_number = encP / ENCODER_DEVIDER;
-
-  while (option_number - screen >= SETTINGS_SCREEN_SPAN)
-    screen++;
-  if (screen > MAX_SETTINGS_SCREEN_NUMBER)
-    screen = MAX_SETTINGS_SCREEN_NUMBER;
-  while (option_number - screen < 0)
-    screen--;
-  if (screen < 0)
-    screen = 0;
-  if (prev_screen != screen)
-    lcd.clear();
+    while (option_number - screen >= SETTINGS_SCREEN_SPAN)
+      screen++;
+    if (screen > MAX_SETTINGS_SCREEN_NUMBER)
+      screen = MAX_SETTINGS_SCREEN_NUMBER;
+    while (option_number - screen < 0)
+      screen--;
+    if (screen < 0)
+      screen = 0;
+    if (prev_screen != screen)
+      lcd.clear();
+  }
 
   /*row 0*/
   lcd.setCursor(1, 0);
-  if (current_settings_option < SETTING_OPTIONS && current_settings_option >= 0)
+  if (current_settings_option >= 0 && current_settings_option < SETTING_OPTIONS)
   {
     lcd.print("SETTINGS>");
     const uint8_t optionLen = strlen(static_content[current_settings_option]);
@@ -918,16 +943,33 @@ uint8_t printSettingsScreen(Encoder *encoder)
 
   for (int i = 0; i < SETTINGS_SCREEN_SPAN; i++)
   {
+    uint8_t option = 0;
     /*Printing static content*/
     lcd.setCursor(content_offseet_left, i + content_offset_top);
-    lcd.print(static_content[i + screen]);
-    // lcd.setCursor(MAX_SETTINGS_STRING_LEN, i);
+    if (current_settings_option == -1)
+    {
+      lcd.print(static_content[i + screen]);
 
-    /*Printing variable parameters from struct settings*/
-    uint8_t p = i + screen;
+      /*Printing variable parameters from struct settings*/
+      option = i + screen;
+    }
+    else if (current_settings_option >= 0 && current_settings_option < SETTING_OPTIONS)
+    {
+      if (i == current_settings_option - screen)
+      {
+        lcd.print(static_content[current_settings_option]);
+        option = current_settings_option;
+      }
+      else
+      {
+        lcd.print("                  ");
+        option = 255;
+      }
+    }
+
     lcd.setCursor(MAX_SETTINGS_STRING_LEN + content_offseet_left, i + content_offset_top);
 
-    switch (p)
+    switch (option)
     {
     case 0:
       lcd.print(settings.pulse_1);
@@ -955,22 +997,29 @@ uint8_t printSettingsScreen(Encoder *encoder)
       lcd.print(settings.beeper_mode == 1 ? "ON" : "OFF");
       break;
     case 7:
-      lcd.print("                    ");
+      lcd.print("                  ");
       break;
     default:
-      lcd.print("                    ");
+      lcd.print("");
       break;
     }
   }
   /*Print cursor on defined position*/
   if (prev_option_number != option_number)
   {
-    lcd.setCursor(0, prev_option_number - screen + content_offset_top);
+    uint8_t prev_cursor_position = prev_option_number - screen + content_offset_top;
+    lcd.setCursor(0, prev_cursor_position);
     lcd.print(" ");
     beep();
   }
-  lcd.setCursor(0, option_number - screen + content_offset_top);
-  lcd.print("*");
+
+  uint8_t cursor_position = option_number - screen + content_offset_top;
+  lcd.setCursor(0, cursor_position);
+  if (current_settings_option == -1)
+    lcd.print("*");
+  else
+    lcd.print(">");
+
   prev_screen = screen;
   prev_option_number = option_number;
   return 1;
@@ -991,4 +1040,33 @@ int digitalReadDebounce(int pin)
   }
 
   return pin_state_accumulator / counter;
+}
+
+void changeSettingsOption(uint8_t option, int8_t increment)
+{
+  // проблема в прибавлении отрицательного числа к 0 для uint8_t опциям. Они становятся максимального значения. pulse_1 + increment < PULSE_1_MIN ? PULSE_1_MIN : pulse_1 + increment
+  switch (option)
+  {
+  case 0:
+    settings.pulse_1 = settings.pulse_1 + increment > PULSE_1_MIN ? (settings.pulse_1 + increment < PULSE_1_MAX ? settings.pulse_1 + increment : PULSE_1_MAX) : PULSE_1_MIN;
+    break;
+  case 1:
+    settings.pulse_2 = settings.pulse_2 + increment > PULSE_2_MIN ? (settings.pulse_2 + increment < PULSE_2_MAX ? settings.pulse_2 + increment : PULSE_2_MAX) : PULSE_2_MIN;
+    break;
+  case 2:
+    settings.inter_pulse_delay = settings.inter_pulse_delay + increment > PULSE_DELAY_MIN ? (settings.inter_pulse_delay + increment < PULSE_DELAY_MAX ? settings.inter_pulse_delay + increment : PULSE_DELAY_MAX) : PULSE_DELAY_MIN;
+    break;
+  case 3:
+    settings.mode = settings.mode + increment > MODE_MIN ? (settings.mode + increment < MODE_MAX ? settings.mode + increment : MODE_MAX) : MODE_MIN;
+    break;
+  case 4:
+    settings.auto_mode_delay = settings.auto_mode_delay + increment > AM_DELAY_MIN ? (settings.auto_mode_delay + increment < AM_DELAY_MAX ? settings.auto_mode_delay + increment : AM_DELAY_MAX) : AM_DELAY_MIN;
+    break;
+  case 5:
+    settings.back_light_saturation = settings.back_light_saturation + increment > BRIGHTNESS_MIN ? (settings.back_light_saturation + increment < BRIGHTNESS_MAX ? settings.back_light_saturation + increment : BRIGHTNESS_MAX) : BRIGHTNESS_MIN;
+    break;
+  case 6:
+    settings.beeper_mode = settings.beeper_mode + increment > BEEPER_MIN ? (settings.beeper_mode + increment < BEEPER_MAX ? settings.beeper_mode + increment : BEEPER_MAX) : BEEPER_MIN;
+    break;
+  }
 }
