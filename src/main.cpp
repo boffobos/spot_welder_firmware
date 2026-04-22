@@ -63,6 +63,8 @@ Encoder enc(2, 3);
 #define MAX_SETTINGS_STRING_LEN 12
 #define SETTING_OPTIONS 7
 #define SETTINGS_SCREEN_SPAN 3
+#define SCREEN_ROW_LENGTH 20
+#define SCREEN_ROWS_NUMBER 4
 #define MAX_SETTINGS_SCREEN_NUMBER SETTING_OPTIONS - SETTINGS_SCREEN_SPAN
 
 /*Settings screen view
@@ -894,8 +896,13 @@ void saveSettings()
 uint8_t printSettingsScreen(Encoder *encoder)
 {
   const char static_content[SETTING_OPTIONS][MAX_SETTINGS_STRING_LEN] = {"Pulse_1:", "Pulse_2:", "Delay:", "Mode:", "Auto_delay:", "Back_light:", "Beeper:"};
-  const uint8_t content_offset_top = 1;   // For top row information line
-  const uint8_t content_offseet_left = 2; // For cursor sign and whitespace
+  const char header[] = "SETTINGS";
+  const char cursor_sign[2][2] = {"*", ">"};
+
+  const uint8_t content_offset_top = 1; // For top row information line
+  const uint8_t cursor_area = 2;
+  const uint8_t parameter_name_area = 11;
+  const uint8_t value_area = 7;
 
   static uint8_t prev_screen = 0;
   static uint8_t prev_option_number = 0;
@@ -925,100 +932,101 @@ uint8_t printSettingsScreen(Encoder *encoder)
       lcd.clear();
   }
 
-  /*row 0*/
-  lcd.setCursor(1, 0);
-  if (current_settings_option >= 0 && current_settings_option < SETTING_OPTIONS)
+  for (int i = 0; i < SCREEN_ROWS_NUMBER; i++)
   {
-    lcd.print("SETTINGS>");
-    const uint8_t optionLen = strlen(static_content[current_settings_option]);
-    char opt[optionLen];
-    strncpy(opt, static_content[current_settings_option], optionLen - 1);
-    opt[optionLen - 1] = '\0';
-    lcd.print(opt);
-  }
-  else
-  {
-    lcd.print("     SETTINGS      ");
-  }
-
-  for (int i = 0; i < SETTINGS_SCREEN_SPAN; i++)
-  {
-    uint8_t option = 0;
-    /*Printing static content*/
-    lcd.setCursor(content_offseet_left, i + content_offset_top);
-    if (current_settings_option == -1)
+    char row[SCREEN_ROW_LENGTH + 1];
+    row[0] = '\0';
+    // header formatting
+    if (i == 0)
     {
-      lcd.print(static_content[i + screen]);
+      char full_header[SCREEN_ROW_LENGTH + 1];
 
-      /*Printing variable parameters from struct settings*/
-      option = i + screen;
-    }
-    else if (current_settings_option >= 0 && current_settings_option < SETTING_OPTIONS)
-    {
-      if (i == current_settings_option - screen)
+      strcpy(full_header, header);
+      if (current_settings_option >= 0 && current_settings_option < SETTING_OPTIONS)
       {
-        lcd.print(static_content[current_settings_option]);
-        option = current_settings_option;
+        strcat(full_header, ">");
+        const uint8_t optionLen = strlen(static_content[current_settings_option]);
+        strncat(full_header, static_content[current_settings_option], optionLen - 1); // delete column from option name
       }
-      else
-      {
-        lcd.print("                  ");
-        option = 255;
-      }
+      uint8_t whitespaces = SCREEN_ROW_LENGTH - strlen(full_header);
+      while (strlen(row) < whitespaces / 2)
+        strcat(row, " ");
+
+      strcat(row, full_header);
+
+      while (strlen(row) < SCREEN_ROW_LENGTH)
+        strcat(row, " ");
     }
-
-    lcd.setCursor(MAX_SETTINGS_STRING_LEN + content_offseet_left, i + content_offset_top);
-
-    switch (option)
+    else
     {
-    case 0:
-      lcd.print(settings.pulse_1);
-      lcd.print("ms");
-      break;
-    case 1:
-      lcd.print(settings.pulse_2);
-      lcd.print("ms");
-      break;
-    case 2:
-      lcd.print(settings.inter_pulse_delay);
-      lcd.print("ms");
-      break;
-    case 3:
-      lcd.print(settings.mode == 1 ? "AUTO" : "MANUAL");
-      break;
-    case 4:
-      lcd.print(settings.auto_mode_delay / 10.0, 1);
-      lcd.print("sec");
-      break;
-    case 5:
-      lcd.print(settings.back_light_saturation);
-      break;
-    case 6:
-      lcd.print(settings.beeper_mode == 1 ? "ON" : "OFF");
-      break;
-    case 7:
-      lcd.print("                  ");
-      break;
-    default:
-      lcd.print("");
-      break;
-    }
-  }
-  /*Print cursor on defined position*/
-  if (prev_option_number != option_number)
-  {
-    uint8_t prev_cursor_position = prev_option_number - screen + content_offset_top;
-    lcd.setCursor(0, prev_cursor_position);
-    lcd.print(" ");
-    beep();
-  }
+      // variable content formatting
+      uint8_t cursor_position = option_number - screen + content_offset_top;
+      uint8_t option = screen + i - content_offset_top;
+      char value[4];
 
-  uint8_t cursor_position = option_number - screen + content_offset_top;
-  lcd.setCursor(0, cursor_position);
-  if (current_settings_option == -1)
-    lcd.print("*");
-  else
-    lcd.print(">");
+      if (i == cursor_position)
+      {
+        if (current_settings_option >= 0 && current_settings_option < SETTING_OPTIONS)
+          strcpy(row, cursor_sign[1]);
+        else
+          strcpy(row, cursor_sign[0]);
+      }
+      while (strlen(row) < cursor_area)
+        strcat(row, " ");
+
+      strcat(row, static_content[screen + i - content_offset_top]);
+
+      while (strlen(row) < cursor_area + parameter_name_area)
+        strcat(row, " ");
+
+      switch (option)
+      {
+      case 0:
+        sprintf(value, "%d", settings.pulse_1);
+        strcat(row, value);
+        strcat(row, "ms");
+        break;
+      case 1:
+        sprintf(value, "%d", settings.pulse_2);
+        strcat(row, value);
+        strcat(row, "ms");
+        break;
+      case 2:
+        sprintf(value, "%d", settings.inter_pulse_delay);
+        strcat(row, value);
+        strcat(row, "ms");
+        break;
+      case 3:
+        strcat(row, settings.mode == 1 ? "AUTO" : "MANUAL");
+        break;
+      case 4:
+        sprintf(value, "%d.%01d", settings.auto_mode_delay / 10, settings.auto_mode_delay % 10);
+        Serial.print("Auto_delay:");
+        Serial.println(value);
+        strcat(row, value);
+        strcat(row, "sec");
+        break;
+      case 5:
+        sprintf(value, "%d", settings.back_light_saturation);
+        strcat(row, value);
+        break;
+      case 6:
+        strcat(row, settings.beeper_mode == 1 ? "ON" : "OFF");
+        break;
+      }
+      while (strlen(row) < cursor_area + parameter_name_area + value_area)
+        strcat(row, " ");
+
+      if (current_settings_option >= 0 && current_settings_option < SETTING_OPTIONS && i != cursor_position)
+      {
+        row[0] = '\0';
+        while (strlen(row) < SCREEN_ROW_LENGTH)
+          strcat(row, " ");
+      }
+    }
+    lcd.setCursor(0, i);
+    lcd.print(row);
+  }
 
   prev_screen = screen;
   prev_option_number = option_number;
@@ -1044,29 +1052,36 @@ int digitalReadDebounce(int pin)
 
 void changeSettingsOption(uint8_t option, int8_t increment)
 {
-  // проблема в прибавлении отрицательного числа к 0 для uint8_t опциям. Они становятся максимального значения. pulse_1 + increment < PULSE_1_MIN ? PULSE_1_MIN : pulse_1 + increment
+  uint8_t s = 0;
   switch (option)
   {
   case 0:
-    settings.pulse_1 = settings.pulse_1 + increment > PULSE_1_MIN ? (settings.pulse_1 + increment < PULSE_1_MAX ? settings.pulse_1 + increment : PULSE_1_MAX) : PULSE_1_MIN;
+    s = settings.pulse_1 + increment;
+    settings.pulse_1 = s > PULSE_1_MIN ? (s < PULSE_1_MAX ? s : PULSE_1_MAX) : PULSE_1_MIN;
     break;
   case 1:
-    settings.pulse_2 = settings.pulse_2 + increment > PULSE_2_MIN ? (settings.pulse_2 + increment < PULSE_2_MAX ? settings.pulse_2 + increment : PULSE_2_MAX) : PULSE_2_MIN;
+    s = settings.pulse_2 + increment;
+    settings.pulse_2 = s > PULSE_2_MIN ? (s < PULSE_2_MAX ? s : PULSE_2_MAX) : PULSE_2_MIN;
     break;
   case 2:
-    settings.inter_pulse_delay = settings.inter_pulse_delay + increment > PULSE_DELAY_MIN ? (settings.inter_pulse_delay + increment < PULSE_DELAY_MAX ? settings.inter_pulse_delay + increment : PULSE_DELAY_MAX) : PULSE_DELAY_MIN;
+    s = settings.inter_pulse_delay + increment;
+    settings.inter_pulse_delay = s > PULSE_DELAY_MIN ? (s < PULSE_DELAY_MAX ? s : PULSE_DELAY_MAX) : PULSE_DELAY_MIN;
     break;
   case 3:
-    settings.mode = settings.mode + increment > MODE_MIN ? (settings.mode + increment < MODE_MAX ? settings.mode + increment : MODE_MAX) : MODE_MIN;
+    s = settings.mode + increment;
+    settings.mode = s > MODE_MIN ? (s < MODE_MAX ? s : MODE_MAX) : MODE_MIN;
     break;
   case 4:
-    settings.auto_mode_delay = settings.auto_mode_delay + increment > AM_DELAY_MIN ? (settings.auto_mode_delay + increment < AM_DELAY_MAX ? settings.auto_mode_delay + increment : AM_DELAY_MAX) : AM_DELAY_MIN;
+    s = settings.auto_mode_delay + increment;
+    settings.auto_mode_delay = s > AM_DELAY_MIN ? (s < AM_DELAY_MAX ? s : AM_DELAY_MAX) : AM_DELAY_MIN;
     break;
   case 5:
-    settings.back_light_saturation = settings.back_light_saturation + increment > BRIGHTNESS_MIN ? (settings.back_light_saturation + increment < BRIGHTNESS_MAX ? settings.back_light_saturation + increment : BRIGHTNESS_MAX) : BRIGHTNESS_MIN;
+    s = settings.back_light_saturation + increment;
+    settings.back_light_saturation = s > BRIGHTNESS_MIN ? (s < BRIGHTNESS_MAX ? s : BRIGHTNESS_MAX) : BRIGHTNESS_MIN;
     break;
   case 6:
-    settings.beeper_mode = settings.beeper_mode + increment > BEEPER_MIN ? (settings.beeper_mode + increment < BEEPER_MAX ? settings.beeper_mode + increment : BEEPER_MAX) : BEEPER_MIN;
+    s = settings.beeper_mode + increment;
+    settings.beeper_mode = s > BEEPER_MIN ? (s < BEEPER_MAX ? s : BEEPER_MAX) : BEEPER_MIN;
     break;
   }
 }
