@@ -84,9 +84,9 @@ Encoder enc(2, 3);
 */
 
 /*EEPROM structure:
-      0         1         2         3         4           5          6          7
-  [||||||||][||||||||][||||||||][00000000][00000000] [||||||||] [||||||||] [|||||||||]
-  [pulse_1]  [delay]   [pulse_2]                    [auto_mode] [am_delay] [brightness]
+      0         1         2         3         4           5          6          7           8
+  [||||||||][||||||||][||||||||][00000000][00000000] [||||||||] [||||||||] [|||||||||]  [||||||||||]
+  [pulse_1]  [delay]   [pulse_2]                    [auto_mode] [am_delay] [brightness] [beeper_mode]
   */
 
 // Для режима AUTO
@@ -946,7 +946,7 @@ uint8_t printSettingsScreen(Encoder *encoder)
       {
         strcat(full_header, ">");
         const uint8_t optionLen = strlen(static_content[current_settings_option]);
-        strncat(full_header, static_content[current_settings_option], optionLen - 1); // delete column from option name
+        strncat(full_header, static_content[current_settings_option], optionLen - 1); // delete colon (:) from option name
       }
       uint8_t whitespaces = SCREEN_ROW_LENGTH - strlen(full_header);
       while (strlen(row) < whitespaces / 2)
